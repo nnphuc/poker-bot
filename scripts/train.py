@@ -21,9 +21,18 @@ def train(
     big_blind: int = typer.Option(100, "--bb"),
     stack: int = typer.Option(10_000, "--stack"),
     seed: int = typer.Option(42, "--seed"),
+    resume: str | None = typer.Option(
+        None,
+        "--resume",
+        "-r",
+        help=(
+            "Resume training. Pass a checkpoint path to resume from a specific file, "
+            "or 'auto' to resume from the latest checkpoint in --output directory."
+        ),
+    ),
     log_file: str = typer.Option("", "--log-file", help="Optional log file path"),
 ) -> None:
-    """Train MCCFR poker bot."""
+    """Train MCCFR poker bot. Saves both resumable checkpoints and strategy snapshots."""
     setup_logging(log_file=log_file or None)
 
     config = TrainingConfig(
@@ -36,9 +45,18 @@ def train(
         seed=seed,
     )
 
+    # Resolve --resume argument
+    resume_arg: bool | str
+    if resume is None:
+        resume_arg = False
+    elif resume == "auto":
+        resume_arg = True
+    else:
+        resume_arg = resume
+
     logger.info(f"Config: {config}")
     trainer = CFRTrainer(config)
-    strategy = trainer.train()
+    strategy = trainer.train(resume=resume_arg)
     logger.success(f"Training done. Infosets: {strategy.n_infosets:,}")
 
 

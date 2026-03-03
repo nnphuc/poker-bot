@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import pickle
 import random
+from pathlib import Path
 
 from loguru import logger
 
@@ -132,11 +134,40 @@ class MCCFR:
         return node_util
 
     def get_strategy(self) -> Strategy:
-        """Extract average strategy profile."""
+        """Extract average strategy profile (for playing, not resuming)."""
         avg: dict[str, dict[int, float]] = {}
         for key, data in self._infosets.items():
             avg[key] = data.get_average_strategy()
         return Strategy(avg, self._iterations)
+
+    def save_checkpoint(self, path: str | Path) -> None:
+        """Save full training state (regret + strategy sums) for later resuming."""
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "infosets": self._infosets,
+            "iterations": self._iterations,
+            "rng_state": self._rng.getstate(),
+        }
+        with open(p, "wb") as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    @classmethod
+    def load_checkpoint(
+        cls,
+        path: str | Path,
+        engine: PokerEngine,
+        stacks: list[int],
+    ) -> MCCFR:
+        """Restore a trainer from a saved checkpoint to continue training."""
+        with open(path, "rb") as f:
+            payload = pickle.load(f)  # trusted internal checkpoint file
+
+        trainer = cls(engine=engine, stacks=stacks)
+        trainer._infosets = payload["infosets"]
+        trainer._iterations = payload["iterations"]
+        trainer._rng.setstate(payload["rng_state"])
+        return trainer
 
     @property
     def n_infosets(self) -> int:
