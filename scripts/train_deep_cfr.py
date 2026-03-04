@@ -35,7 +35,7 @@ def train(
         "-r",
         help="Path to a .pt checkpoint to resume from.",
     ),
-    device: str = typer.Option("cpu", "--device", help="cpu or cuda"),
+    device: str = typer.Option("cpu", "--device", help="cpu | cuda | mps (auto-validated)"),
     log_file: str = typer.Option("", "--log-file"),
 ) -> None:
     """Train Deep CFR poker bot.  Checkpoints saved as .pt files."""
@@ -43,6 +43,21 @@ def train(
 
     if not 2 <= n_players <= 5:
         raise typer.BadParameter("--players must be 2-5")
+
+    # Validate / auto-select device
+    import torch as _torch
+
+    if device == "cuda" and not _torch.cuda.is_available():
+        if _torch.backends.mps.is_available():
+            logger.warning("CUDA not available. Falling back to --device mps (Apple Silicon).")
+            device = "mps"
+        else:
+            logger.warning("CUDA not available. Falling back to --device cpu.")
+            device = "cpu"
+    elif device == "mps" and not _torch.backends.mps.is_available():
+        logger.warning("MPS not available. Falling back to --device cpu.")
+        device = "cpu"
+    logger.info(f"Using device: {device}")
 
     stacks = [stack] * n_players
     engine = PokerEngine(small_blind, big_blind)

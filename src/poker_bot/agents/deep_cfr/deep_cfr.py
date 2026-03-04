@@ -58,7 +58,7 @@ class DeepCFR:
         self._rng = random.Random(seed)
         self._iterations = 0
 
-        # One advantage network per player
+        # One advantage network per player — kept on `device` for batch training.
         self._adv_nets = [
             AdvantageNetwork(N_FEATURES, N_ACTIONS, hidden_size).to(self._device)
             for _ in range(self._n_players)
@@ -66,6 +66,16 @@ class DeepCFR:
         self._adv_optims = [
             optim.Adam(net.parameters(), lr=lr) for net in self._adv_nets
         ]
+
+        # CPU shadow copies used for single-sample traversal inference.
+        # 1-sample GPU inference has >10x overhead vs CPU due to CUDA kernel
+        # launch latency on a (1, N_FEATURES) tensor.  These are synced after
+        # every advantage training session.
+        self._infer_nets = [
+            AdvantageNetwork(N_FEATURES, N_ACTIONS, hidden_size)  # CPU
+            for _ in range(self._n_players)
+        ]
+        self._sync_infer_nets()
 
         # One strategy network (average strategy across all players)
         self._strat_net = StrategyNetwork(N_FEATURES, N_ACTIONS, hidden_size).to(
@@ -82,6 +92,8 @@ class DeepCFR:
 
         # Put all networks in eval mode (training is done in batches)
         for net in self._adv_nets:
+            net.eval()
+        for net in self._infer_nets:
             net.eval()
         self._strat_net.eval()
 
@@ -115,6 +127,7 @@ class DeepCFR:
             self._iterations += 1
 
             if self._iterations % train_every == 0:
+                trained_any = False
                 for player_id in range(self._n_players):
                     buf = self._adv_buffers[player_id]
                     if len(buf) >= min(batch_size, 64):
@@ -122,6 +135,10 @@ class DeepCFR:
                         logger.debug(
                             f"Iter {self._iterations} | P{player_id} adv loss: {loss:.4f}"
                         )
+                        trained_any = True
+                # Sync CPU inference shadows after GPU training
+                if trained_any:
+                    self._sync_infer_nets()
                 # Also train strategy net periodically so it improves throughout
                 if len(self._strat_buffer) >= min(batch_size, 64):
                     strat_loss = self._train_strategy(batch_size, n_train_steps)
@@ -171,8 +188,12 @@ class DeepCFR:
         device: str = "cpu",
     ) -> DeepCFR:
         """Restore trainer from a saved checkpoint."""
+        # Always load tensors to CPU first; model.load_state_dict() will move
+        # them to the correct device automatically since the model is already
+        # placed on `device`.  Loading directly to target device can fail when
+        # the device changes between save and load (e.g. cpu → cuda/mps).
         payload = torch.load(
-            path, map_location=device, weights_only=False  # trusted internal file
+            path, map_location="cpu", weights_only=False  # trusted internal file
         )
         hidden_size = payload.get("hidden_size", 256)
         trainer = cls(
@@ -183,6 +204,7 @@ class DeepCFR:
         )
         for net, state in zip(trainer._adv_nets, payload["adv_net_states"], strict=True):
             net.load_state_dict(state)
+        trainer._sync_infer_nets()
         trainer._strat_net.load_state_dict(payload["strat_net_state"])
         for opt, state in zip(trainer._adv_optims, payload["adv_optim_states"], strict=True):
             opt.load_state_dict(state)
@@ -194,6 +216,12 @@ class DeepCFR:
         trainer._rng.setstate(payload["rng_state"])
         logger.info(f"Loaded checkpoint: iter={trainer._iterations}")
         return trainer
+
+    def _sync_infer_nets(self) -> None:
+        """Copy advantage network weights to CPU inference shadows."""
+        for src, dst in zip(self._adv_nets, self._infer_nets, strict=True):
+            dst.load_state_dict({k: v.cpu() for k, v in src.state_dict().items()})
+            dst.eval()
 
     @property
     def n_iterations(self) -> int:
@@ -277,13 +305,15 @@ class DeepCFR:
         features: np.ndarray,
         mask: np.ndarray,
     ) -> dict[int, float]:
-        """Compute strategy via regret matching on advantage network output."""
-        net = self._adv_nets[player_id]
+        """Compute strategy via regret matching on advantage network output.
+
+        Uses the CPU shadow network for inference — single-sample GPU inference
+        has >10x overhead vs CPU due to CUDA kernel launch latency.
+        """
+        net = self._infer_nets[player_id]  # always on CPU
         with torch.no_grad():
-            feat_t = torch.tensor(
-                features, dtype=torch.float32, device=self._device
-            ).unsqueeze(0)
-            adv = net(feat_t).squeeze(0).cpu().numpy()
+            feat_t = torch.tensor(features, dtype=torch.float32).unsqueeze(0)
+            adv = net(feat_t).squeeze(0).numpy()
 
         # Positive regret matching over valid actions
         positive = np.where(mask == 1, np.maximum(adv, 0.0), 0.0)
