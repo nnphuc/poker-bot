@@ -28,8 +28,8 @@ class PokerEngine:
     ) -> GameState:
         """Initialise a new hand and return the complete initial state."""
         n = len(stacks)
-        if n < 2:
-            raise ValueError("Need at least 2 players")
+        if not 2 <= n <= 5:
+            raise ValueError("Need 2-5 players")
 
         deck = Deck()
         deck.shuffle(seed)

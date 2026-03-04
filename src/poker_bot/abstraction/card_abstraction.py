@@ -11,19 +11,32 @@ class CardAbstraction:
 
     Uses E[HS^2] (Expected Hand Strength squared) bucketing,
     a simple but effective abstraction used in CEPHEUS and similar bots.
+    Results are cached per (hole_cards, board) tuple for MCCFR performance.
     """
 
-    def __init__(self, n_buckets: int = 8, n_simulations: int = 200) -> None:
+    def __init__(self, n_buckets: int = 8, n_simulations: int = 50) -> None:
         self.n_buckets = n_buckets
         self.n_simulations = n_simulations
         self._evaluator = HandEvaluator()
+        self._cache: dict[tuple[tuple[int, int], ...], int] = {}
+
+    def _cache_key(
+        self, hole_cards: list[Card], board: list[Card]
+    ) -> tuple[tuple[int, int], ...]:
+        """Canonical order-independent key for caching."""
+        hole = tuple(sorted((c.rank.value, c.suit.value) for c in hole_cards))
+        brd = tuple(sorted((c.rank.value, c.suit.value) for c in board))
+        return hole + brd
 
     def get_bucket(self, hole_cards: list[Card], board: list[Card]) -> int:
         """Return bucket index 0..n_buckets-1 for given hand + board."""
+        key = self._cache_key(hole_cards, board)
+        if key in self._cache:
+            return self._cache[key]
         equity = self._evaluator.equity(hole_cards, board, self.n_simulations)
-        # Map equity [0,1] -> bucket [0, n_buckets-1]
-        bucket = int(equity * self.n_buckets)
-        return min(bucket, self.n_buckets - 1)
+        bucket = min(int(equity * self.n_buckets), self.n_buckets - 1)
+        self._cache[key] = bucket
+        return bucket
 
     def get_equity(self, hole_cards: list[Card], board: list[Card]) -> float:
         """Return raw equity estimate."""
@@ -49,12 +62,11 @@ class CardAbstraction:
             gap = high.rank.value - low.rank.value
             gap_penalty = {1: 0, 2: -1, 3: -2, 4: -4}
             score += gap_penalty.get(gap, -5)
+            # Straight potential (pairs can't form connectors)
+            if gap <= 2 and high.rank.value < 12:
+                score += 1
 
         if high.suit == low.suit:  # suited
             score += 2
-
-        # Straight potential
-        if gap <= 2 and high.rank.value < 12:
-            score += 1
 
         return score

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from poker_bot.abstraction.card_abstraction import CardAbstraction
 from poker_bot.agents.base import Agent
 from poker_bot.agents.cfr.infoset import InfosetData, build_infoset_key
 from poker_bot.agents.cfr.strategy import Strategy
@@ -63,21 +64,24 @@ class MCCFR:
         engine: PokerEngine,
         stacks: list[int],
         seed: int | None = None,
+        abstraction: CardAbstraction | None = None,
     ) -> None:
         self._engine = engine
         self._stacks = stacks
         self._infosets: dict[str, InfosetData] = {}
         self._rng = random.Random(seed)
         self._iterations = 0
+        self._abstraction = abstraction
 
     def train(self, n_iterations: int) -> None:
         """Run n_iterations of MCCFR."""
+        n_players = len(self._stacks)
         for i in range(n_iterations):
-            for player_id in range(len(self._stacks)):
+            for player_id in range(n_players):
                 state = self._engine.new_game(
                     list(self._stacks), seed=self._rng.randint(0, 2**31)
                 )
-                self._mccfr(state, player_id, [1.0, 1.0])
+                self._mccfr(state, player_id, [1.0] * n_players)
             self._iterations += 1
 
             if (i + 1) % 1000 == 0:
@@ -97,10 +101,18 @@ class MCCFR:
         actions = get_abstract_actions(state, self._engine)
         n_actions = len(actions)
 
-        key = build_infoset_key(state, current)
+        key = build_infoset_key(state, current, self._abstraction)
         if key.key not in self._infosets:
             self._infosets[key.key] = InfosetData(n_actions)
         infoset = self._infosets[key.key]
+
+        # With card abstraction, different states may share a key but have
+        # different action counts. Expand stored data if needed.
+        stored = len(infoset.regret_sum)
+        if stored < n_actions:
+            for i in range(stored, n_actions):
+                infoset.regret_sum[i] = 0.0
+                infoset.strategy_sum[i] = 0.0
 
         strategy = infoset.get_strategy(reach_probs[current])
 
@@ -126,7 +138,11 @@ class MCCFR:
 
         # Update regrets for current player only
         if current == player_id:
-            opp_reach = reach_probs[1 - player_id] if len(reach_probs) == 2 else 1.0
+            # Counterfactual reach: product of all other players' reach probs
+            opp_reach = 1.0
+            for i, rp in enumerate(reach_probs):
+                if i != player_id:
+                    opp_reach *= rp
             for a_idx in range(n_actions):
                 regret = action_utils.get(a_idx, 0.0) - node_util
                 infoset.regret_sum[a_idx] += opp_reach * regret
@@ -144,10 +160,17 @@ class MCCFR:
         """Save full training state (regret + strategy sums) for later resuming."""
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
+        abstraction_cfg = None
+        if self._abstraction is not None:
+            abstraction_cfg = {
+                "n_buckets": self._abstraction.n_buckets,
+                "n_simulations": self._abstraction.n_simulations,
+            }
         payload = {
             "infosets": self._infosets,
             "iterations": self._iterations,
             "rng_state": self._rng.getstate(),
+            "abstraction_cfg": abstraction_cfg,
         }
         with open(p, "wb") as f:
             pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -158,12 +181,21 @@ class MCCFR:
         path: str | Path,
         engine: PokerEngine,
         stacks: list[int],
+        abstraction: CardAbstraction | None = None,
     ) -> MCCFR:
         """Restore a trainer from a saved checkpoint to continue training."""
         with open(path, "rb") as f:
             payload = pickle.load(f)  # trusted internal checkpoint file
 
-        trainer = cls(engine=engine, stacks=stacks)
+        # Restore abstraction from checkpoint if not explicitly provided
+        if abstraction is None and payload.get("abstraction_cfg") is not None:
+            cfg = payload["abstraction_cfg"]
+            abstraction = CardAbstraction(
+                n_buckets=cfg["n_buckets"],
+                n_simulations=cfg["n_simulations"],
+            )
+
+        trainer = cls(engine=engine, stacks=stacks, abstraction=abstraction)
         trainer._infosets = payload["infosets"]
         trainer._iterations = payload["iterations"]
         trainer._rng.setstate(payload["rng_state"])
@@ -177,14 +209,20 @@ class MCCFR:
 class MCCFRAgent(Agent):
     """Agent that plays according to a trained MCCFR strategy."""
 
-    def __init__(self, strategy: Strategy, engine: PokerEngine) -> None:
+    def __init__(
+        self,
+        strategy: Strategy,
+        engine: PokerEngine,
+        abstraction: CardAbstraction | None = None,
+    ) -> None:
         self._strategy = strategy
         self._engine = engine
         self._rng = random.Random()
+        self._abstraction = abstraction
 
     def act(self, state: GameState, engine: PokerEngine) -> Action:
         actions = get_abstract_actions(state, engine)
-        key = build_infoset_key(state, state.current_player_idx)
+        key = build_infoset_key(state, state.current_player_idx, self._abstraction)
         probs = self._strategy.get(key.key, len(actions))
 
         # Sample action from strategy

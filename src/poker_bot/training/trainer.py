@@ -7,6 +7,7 @@ from pathlib import Path
 from loguru import logger
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TimeElapsedColumn
 
+from poker_bot.abstraction.card_abstraction import CardAbstraction
 from poker_bot.agents.cfr.mccfr import MCCFR
 from poker_bot.agents.cfr.strategy import Strategy
 from poker_bot.game.engine import PokerEngine
@@ -47,6 +48,7 @@ class CFRTrainer:
     def __init__(self, config: TrainingConfig) -> None:
         self.config = config
         self._engine = PokerEngine(config.small_blind, config.big_blind)
+        self._abstraction = CardAbstraction(n_buckets=config.n_card_buckets)
 
     def train(self, resume: bool | str | Path = False) -> Strategy:
         """Run training and return the final averaged strategy.
@@ -125,7 +127,12 @@ class CFRTrainer:
         stacks = list(self.config.starting_stacks)
 
         if resume is False:
-            return MCCFR(engine=self._engine, stacks=stacks, seed=self.config.seed)
+            return MCCFR(
+                engine=self._engine,
+                stacks=stacks,
+                seed=self.config.seed,
+                abstraction=self._abstraction,
+            )
 
         ckpt_path: Path | None
         if resume is True:
@@ -139,4 +146,9 @@ class CFRTrainer:
                 raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
         logger.info(f"Resuming from checkpoint: {ckpt_path}")
-        return MCCFR.load_checkpoint(ckpt_path, engine=self._engine, stacks=stacks)
+        return MCCFR.load_checkpoint(
+            ckpt_path,
+            engine=self._engine,
+            stacks=stacks,
+            abstraction=self._abstraction,
+        )

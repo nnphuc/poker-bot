@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 class TrainingConfig:
     """Configuration for MCCFR training."""
 
-    # Game setup
-    starting_stacks: tuple[int, int] = (10_000, 10_000)
+    # Game setup (2-5 players; each entry is one player's starting stack)
+    starting_stacks: tuple[int, ...] = (10_000, 10_000)
     small_blind: int = 50
     big_blind: int = 100
 

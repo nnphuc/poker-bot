@@ -17,6 +17,7 @@ def train(
     iterations: int = typer.Option(100_000, "--iterations", "-i", help="Total CFR iterations"),
     checkpoint_every: int = typer.Option(10_000, "--checkpoint-every", help="Save every N iters"),
     checkpoint_dir: str = typer.Option("models/checkpoints", "--output", "-o"),
+    n_players: int = typer.Option(2, "--players", "-n", help="Number of players (2-5)"),
     small_blind: int = typer.Option(50, "--sb"),
     big_blind: int = typer.Option(100, "--bb"),
     stack: int = typer.Option(10_000, "--stack"),
@@ -35,8 +36,11 @@ def train(
     """Train MCCFR poker bot. Saves both resumable checkpoints and strategy snapshots."""
     setup_logging(log_file=log_file or None)
 
+    if not 2 <= n_players <= 5:
+        raise typer.BadParameter("--players must be between 2 and 5")
+
     config = TrainingConfig(
-        starting_stacks=(stack, stack),
+        starting_stacks=tuple([stack] * n_players),
         small_blind=small_blind,
         big_blind=big_blind,
         total_iterations=iterations,

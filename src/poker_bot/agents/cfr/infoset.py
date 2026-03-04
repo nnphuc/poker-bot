@@ -3,8 +3,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from poker_bot.game.state import GameState
+from poker_bot.game.state import BettingRound, GameState
+
+if TYPE_CHECKING:
+    from poker_bot.abstraction.card_abstraction import CardAbstraction
+
+# Short prefix per betting round used in abstracted keys
+_ROUND_TAG = {
+    BettingRound.PREFLOP: "PF",
+    BettingRound.FLOP: "FL",
+    BettingRound.TURN: "TU",
+    BettingRound.RIVER: "RI",
+}
+
+
+def _abstract_act(act_str: str) -> str:
+    """Strip exact amounts: 'raise:450' -> 'R', 'call:100' -> 'C', etc."""
+    if act_str == "fold":
+        return "F"
+    if act_str == "check":
+        return "X"
+    if act_str.startswith("call"):
+        return "C"
+    if act_str.startswith("raise"):
+        return "R"
+    if act_str.startswith("all_in"):
+        return "A"
+    return act_str
 
 
 @dataclass(frozen=True)
@@ -17,24 +44,38 @@ class InfosetKey:
         return self.key
 
 
-def build_infoset_key(state: GameState, player_id: int) -> InfosetKey:
+def build_infoset_key(
+    state: GameState,
+    player_id: int,
+    abstraction: CardAbstraction | None = None,
+) -> InfosetKey:
     """Build information set key for a player.
 
-    Encodes: hole cards (sorted for suit isomorphism), board, betting history.
+    With abstraction=None (default): raw cards + exact bet amounts.
+    With abstraction provided: equity bucket + abstract action types only.
+    Abstracted form collapses millions of infosets into thousands.
     """
     player = state.players[player_id]
 
-    # Sort hole cards for canonical representation (suit isomorphism simplified)
-    hole = sorted(player.hole_cards, key=lambda c: (c.rank.value, c.suit.value))
-    hole_str = "".join(str(c) for c in hole)
+    if abstraction is not None:
+        # Card part: "FL:5" = flop, bucket 5
+        if state.current_round == BettingRound.PREFLOP:
+            bucket = abstraction.preflop_bucket(player.hole_cards)
+        else:
+            bucket = abstraction.get_bucket(player.hole_cards, state.board)
+        card_str = f"{_ROUND_TAG[state.current_round]}:{bucket}"
+        history = "|".join(
+            f"{pid}:{_abstract_act(act)}" for pid, act in state.action_history
+        )
+    else:
+        hole = sorted(player.hole_cards, key=lambda c: (c.rank.value, c.suit.value))
+        card_str = "".join(str(c) for c in hole)
+        board_str = "".join(str(c) for c in state.board)
+        if board_str:
+            card_str += f"/{board_str}"
+        history = "|".join(f"{pid}:{act}" for pid, act in state.action_history)
 
-    board_str = "".join(str(c) for c in state.board)
-
-    # Betting history this hand
-    history = "|".join(f"{pid}:{act}" for pid, act in state.action_history)
-
-    key = f"{hole_str}/{board_str}/{history}"
-    return InfosetKey(key)
+    return InfosetKey(f"{card_str}/{history}")
 
 
 @dataclass
