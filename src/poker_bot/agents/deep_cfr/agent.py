@@ -30,10 +30,10 @@ class DeepCFRAgent(Agent):
         starting_stack: int = 10_000,
         device: str = "cpu",
     ) -> None:
-        self._net = strategy_net
+        self._device = torch.device(device)
+        self._net = strategy_net.to(self._device)
         self._engine = engine
         self._starting_stack = starting_stack
-        self._device = torch.device(device)
         self._rng = random.Random()
         self._net.eval()
 

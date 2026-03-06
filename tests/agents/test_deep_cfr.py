@@ -171,6 +171,54 @@ def test_deep_cfr_3_players(engine: PokerEngine) -> None:
     assert len(trainer.adv_buffer_sizes) == 3
 
 
+def test_deep_cfr_updates_opponent_reach_and_records_strategy_sample(
+    engine: PokerEngine,
+) -> None:
+    class ProbeDeepCFR(DeepCFR):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            self._probe_seen_root = False
+            self.observed_reach: list[float] | None = None
+
+        def _traverse(
+            self,
+            state: GameState,
+            player_id: int,
+            reach_probs: list[float],
+            iteration: int,
+        ) -> float:
+            if self._probe_seen_root:
+                self.observed_reach = list(reach_probs)
+                return 0.0
+            self._probe_seen_root = True
+            return super()._traverse(state, player_id, reach_probs, iteration)
+
+    trainer = ProbeDeepCFR(engine, stacks=[10_000, 10_000], hidden_size=64, seed=13)
+    state = engine.new_game([10_000, 10_000], seed=7)
+
+    expected_prob = 0.75
+
+    def fixed_regret_match(
+        player_id: int,
+        features: np.ndarray,
+        mask: np.ndarray,
+    ) -> dict[int, float]:
+        del player_id, features
+        strategy = {i: 0.0 for i in range(N_ACTIONS) if mask[i] == 1}
+        strategy[0] = 0.25
+        strategy[1] = expected_prob
+        return strategy
+
+    trainer._regret_match = fixed_regret_match  # type: ignore[method-assign]
+    trainer._sample_action = lambda strategy, mask: 1  # type: ignore[method-assign]
+
+    trainer._traverse(state, player_id=1, reach_probs=[1.0, 1.0], iteration=0)
+
+    assert trainer.observed_reach is not None
+    assert trainer.observed_reach[0] == pytest.approx(expected_prob)
+    assert len(trainer._strat_buffer) == 1
+
+
 # ---------------------------------------------------------------------------
 # DeepCFRAgent
 # ---------------------------------------------------------------------------

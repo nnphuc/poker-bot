@@ -252,6 +252,14 @@ class DeepCFR:
         strategy = self._regret_match(current, features, mask)
         weight = float(iteration + 1)  # linear CFR weighting
 
+        # Average-strategy samples should be collected for every visited player node,
+        # not only for the traversing player. The sample is weighted by the acting
+        # player's reach probability to approximate the time-averaged policy.
+        strat_arr = np.array(
+            [strategy.get(i, 0.0) for i in range(N_ACTIONS)], dtype=np.float32
+        )
+        self._strat_buffer.add((features, strat_arr, reach_probs[current], weight))
+
         if current == player_id:
             # Full exploration: visit every valid action
             action_values: dict[int, float] = {}
@@ -281,19 +289,15 @@ class DeepCFR:
 
             self._adv_buffers[player_id].add((features, regrets, weight))
 
-            # Strategy sample stored in strategy buffer
-            strat_arr = np.array(
-                [strategy.get(i, 0.0) for i in range(N_ACTIONS)], dtype=np.float32
-            )
-            self._strat_buffer.add((features, strat_arr, reach_probs[player_id], weight))
-
             return node_value
 
         else:
             # Chance sampling: sample one action for the opponent
             a_idx = self._sample_action(strategy, mask)
             new_state = self._engine.apply_action(state, actions_map[a_idx])
-            return self._traverse(new_state, player_id, reach_probs, iteration)
+            new_reach = list(reach_probs)
+            new_reach[current] *= strategy[a_idx]
+            return self._traverse(new_state, player_id, new_reach, iteration)
 
     # ------------------------------------------------------------------
     # Strategy from advantage network
@@ -413,8 +417,11 @@ class DeepCFR:
             # Normalize weights within batch to keep loss scale bounded.
             weights = weights / (weights.mean() + 1e-8)
 
-            pred = net(features)
-            loss = (weights.unsqueeze(1) * (pred - targets) ** 2).mean()
+            targets = targets / targets.sum(dim=1, keepdim=True).clamp_min(1e-8)
+            logits = net(features)
+            log_probs = torch.log_softmax(logits, dim=1)
+            per_sample_loss = -(targets * log_probs).sum(dim=1)
+            loss = (weights * per_sample_loss).mean()
 
             optimizer.zero_grad()
             loss.backward()

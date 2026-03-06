@@ -22,6 +22,14 @@ from poker_bot.utils.logging import setup_logging
 app = typer.Typer(help="Evaluate trained poker bot")
 
 
+def _infer_hidden_size(state_dict: dict[str, torch.Tensor]) -> int:
+    """Infer MLP hidden size from a saved Deep CFR strategy state dict."""
+    first_layer = state_dict.get("net.0.weight")
+    if first_layer is None or first_layer.ndim != 2:
+        raise ValueError("Invalid Deep CFR strategy checkpoint: missing net.0.weight")
+    return int(first_layer.shape[0])
+
+
 @app.command()
 def evaluate(
     strategy_path: str = typer.Option(
@@ -56,11 +64,15 @@ def evaluate(
         )
         bot = MCCFRAgent(strategy, engine)
     elif agent_type == "deep_cfr":
-        net = StrategyNetwork(N_FEATURES, N_ACTIONS)
         state_dict = torch.load(strategy_path, map_location=device, weights_only=True)
+        hidden_size = _infer_hidden_size(state_dict)
+        net = StrategyNetwork(N_FEATURES, N_ACTIONS, hidden_size=hidden_size)
         net.load_state_dict(state_dict)
+        net = net.to(device)
         bot = DeepCFRAgent(net, engine, starting_stack=stack, device=device)
-        logger.info(f"Loaded Deep CFR strategy network: {strategy_path}")
+        logger.info(
+            f"Loaded Deep CFR strategy network: {strategy_path} | hidden={hidden_size}"
+        )
     else:
         logger.error(f"Unknown --agent-type '{agent_type}'. Use 'mccfr' or 'deep_cfr'.")
         raise typer.Exit(1)

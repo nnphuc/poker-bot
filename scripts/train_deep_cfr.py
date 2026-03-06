@@ -36,6 +36,10 @@ def train(
         help="Path to a .pt checkpoint to resume from.",
     ),
     device: str = typer.Option("cpu", "--device", help="cpu | cuda | mps (auto-validated)"),
+    max_checkpoints: int = typer.Option(
+        2, "--max-checkpoints", help="Max checkpoints to keep (0=unlimited)"
+    ),
+    prefix: str = typer.Option("poker_bot", "--prefix", help="Checkpoint filename prefix"),
     log_file: str = typer.Option("", "--log-file"),
 ) -> None:
     """Train Deep CFR poker bot.  Checkpoints saved as .pt files."""
@@ -98,12 +102,19 @@ def train(
         )
         step += chunk
 
-        ckpt = output_dir / f"deep_cfr_{step:08d}.pt"
+        ckpt = output_dir / f"{prefix}_{step:08d}.pt"
         trainer.save_checkpoint(ckpt)
         logger.info(
             f"[{step}/{iterations}] | adv_bufs={trainer.adv_buffer_sizes} "
-            f"| strat_buf={trainer.adv_buffer_sizes}"
+            f"| strat_buf={len(trainer._strat_buffer)}"
         )
+
+        # Prune old checkpoints, keeping only the most recent max_checkpoints
+        if max_checkpoints > 0:
+            old = sorted(output_dir.glob(f"{prefix}_????????.pt"))[:-max_checkpoints]
+            for f in old:
+                f.unlink()
+                logger.debug(f"Removed old checkpoint: {f.name}")
 
     # Save final strategy network weights separately
     final = output_dir / "strategy_net_final.pt"
